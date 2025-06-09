@@ -110,10 +110,17 @@ class RefreshFreeRedditMonitor {
             const timelineEvents = this.shadowElements.virtualScroll.querySelectorAll('rs-timeline-event');
             const messages = [];
             
+            // İlk geçişte tüm kullanıcı adlarını topla (doğru sıralama için)
+            let lastSeenAuthor = null;
+            
             timelineEvents.forEach((event, index) => {
-                const messageData = this.extractMessageData(event, index);
+                const messageData = this.extractMessageData(event, index, lastSeenAuthor);
                 if (messageData) {
                     messages.push(messageData);
+                    // Eğer bu mesajda gerçek bir yazar varsa, bir sonraki için güncelle
+                    if (messageData.author && messageData.author !== 'Bilinmeyen' && messageData.hasActualAuthor) {
+                        lastSeenAuthor = messageData.author;
+                    }
                 }
             });
             
@@ -124,8 +131,8 @@ class RefreshFreeRedditMonitor {
         }
     }
     
-    // MESAJ VERİSİNİ ÇIKAR
-    extractMessageData(eventElement, index) {
+    // MESAJ VERİSİNİ ÇIKAR - GELİŞTİRİLMİŞ KULLANICI TAKİBİ
+    extractMessageData(eventElement, index, lastSeenAuthor) {
         try {
             if (!eventElement.shadowRoot) return null;
             
@@ -140,13 +147,17 @@ class RefreshFreeRedditMonitor {
                 }
             } catch (e) {}
             
-            // Yazar
-            let author = 'Bilinmeyen';
+            // Yazar arama - geliştirilmiş mantık
+            let author = null;
+            let hasActualAuthor = false; // Gerçek yazar bulundu mu?
+            
             try {
                 const authorSelectors = [
                     'faceplate-tracker[noun="user_hovers"] > span[slot="trigger"]',
                     '.room-message-author',
-                    'span.user-name'
+                    'span.user-name',
+                    'div[slot="author"] span',
+                    '[data-testid*="author"] span'
                 ];
                 
                 for (const selector of authorSelectors) {
@@ -159,15 +170,34 @@ class RefreshFreeRedditMonitor {
                         if (authorText.startsWith('u/')) {
                             authorText = authorText.substring(2);
                         }
-                        if (authorText) {
+                        if (authorText && authorText.length > 0) {
                             author = authorText;
+                            hasActualAuthor = true;
+                            this.log(`👤 Gerçek yazar bulundu: ${author}`);
                             break;
                         }
                     }
                 }
-            } catch (e) {}
+                
+                // Eğer gerçek yazar bulunamadıysa, son bilinen kullanıcıyı kullan
+                if (!hasActualAuthor && lastSeenAuthor) {
+                    author = lastSeenAuthor;
+                    this.log(`🔄 Son bilinen kullanıcı kullanılıyor: ${author}`);
+                } else if (!hasActualAuthor) {
+                    author = 'Bilinmeyen';
+                    this.log(`❓ Kullanıcı bulunamadı, 'Bilinmeyen' kullanılıyor`);
+                }
+                
+            } catch (e) {
+                // Hata durumunda da son bilinen kullanıcıyı dene
+                if (lastSeenAuthor) {
+                    author = lastSeenAuthor;
+                } else {
+                    author = 'Bilinmeyen';
+                }
+            }
             
-            // Timestamp (sabit timestamp için)
+            // Timestamp
             let timestamp = new Date().toLocaleTimeString('tr-TR');
             try {
                 const timeElement = shadowRoot.querySelector('rs-timestamp time-stamp > span');
@@ -187,7 +217,8 @@ class RefreshFreeRedditMonitor {
                 text: messageText,
                 author: author,
                 timestamp: timestamp,
-                element: eventElement
+                element: eventElement,
+                hasActualAuthor: hasActualAuthor // Gerçek yazar olup olmadığını işaretle
             };
             
         } catch (e) {
@@ -232,6 +263,14 @@ try {
     const latestMessages = convertedMessages.slice(-%(message_limit)s);
     
     console.log(`[RefreshFreeMonitor] Bot için ${latestMessages.length} mesaj hazırlandı`);
+    
+    // Kullanıcı dağılımını göster (debug için)
+    const userCounts = {};
+    latestMessages.forEach(msg => {
+        userCounts[msg.author] = (userCounts[msg.author] || 0) + 1;
+    });
+    console.log(`[RefreshFreeMonitor] Kullanıcı dağılımı:`, userCounts);
+    
     return latestMessages;
 } catch (e) {
     console.log(`[RefreshFreeMonitor] HATA: ${e.message}`);
