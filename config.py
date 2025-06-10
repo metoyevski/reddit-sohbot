@@ -14,9 +14,9 @@ CHAT_RELAY_TIMEOUT_SECONDS = 60
 # --- Diğer Bot Ayarları ---
 BOT_OWN_USERNAME = "FelsefeGPT"  # BOTUNUZUN REDDIT KULLANICI ADINI GİRİN (Büyük/küçük harf önemli olabilir)
 
-CONTEXT_WINDOW_SIZE = 400  # 420 * 1.5 = 630
-CONTEXT_PROMPT_USER_MESSAGES = 66  # 60 * 1.5 = 90
-CONTEXT_PROMPT_AI_RESPONSES = 23  # 15 * 1.5 = 22.5 ≈ 23
+CONTEXT_WINDOW_SIZE = 100  # Daha hafif bağlam
+CONTEXT_PROMPT_USER_MESSAGES = 35  # Max 35 mesaj
+CONTEXT_PROMPT_AI_RESPONSES = 10  # Max 10 AI yanıtı
 
 MAX_RESPONSE_WORDS = 400 # Bu hala botun kendi içindeki kısaltma mekanizması için geçerli
 INITIAL_MESSAGES_TO_READ = 40 # 50 * 1.5 = 75, daha sağlam bir başlangıç için artırıldı

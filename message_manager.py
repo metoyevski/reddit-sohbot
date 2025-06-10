@@ -375,17 +375,15 @@ class MessageManager:
                  print(f"[{time.strftime('%H:%M:%S')}] BAŞLANGIÇ /ai: '{message_content[:30]}...' (K: {username_original_case}) bağlama eklendi, yanıtlanmayacak.")
 
         if is_ai_command:
-            should_respond_to_ai_command = False
-            # Başlangıç taraması bittiyse ve bu mesaj yeni bir mesajsa yanıtla
-            if initial_scan_complete_time is not None:
-                # `should_add_to_context` zaten bu mesajın yeni olduğunu teyit etti.
-                if should_add_to_context:
-                     should_respond_to_ai_command = True
+            # Basitleştirilmiş kontrol: Sadece initial scan bitmiş mi?
+            should_respond_to_ai_command = (initial_scan_complete_time is not None) and should_add_to_context
 
             if should_respond_to_ai_command:
                 user_prompt = message_content[len("/ai "):].strip()
-                print(f"[{time.strftime('%H:%M:%S')}] YENİ /ai komutu '{user_prompt[:30]}...' (K: {username_original_case}) işleniyor...")
+                print(f"[{time.strftime('%H:%M:%S')}] ✅ YENİ /ai komutu '{user_prompt[:30]}...' (K: {username_original_case}) işleniyor...")
                 context_string = self.context_manager.get_context_string()
                 full_prompt = context_string + f"KULLANICI '{username_original_case}' şunu soruyor: {user_prompt}"
                 return full_prompt
+            else:
+                print(f"[{time.strftime('%H:%M:%S')}] ❌ /ai komutu atlandı: initial_scan={initial_scan_complete_time is not None}, new_msg={should_add_to_context}")
         return None

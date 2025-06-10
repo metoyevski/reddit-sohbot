@@ -190,8 +190,8 @@ class RedditChatBot:
         self.initial_scan_complete_time = datetime.now()
         print(f"[{time.strftime('%H:%M:%S')}] ✅ Başlangıç taraması tamamlandı!")
         print(f"[{time.strftime('%H:%M:%S')}] 📊 İstatistik: {total_processed} mesaj işlendi, {ai_commands_found} adet /ai komutu bulundu (yanıtlanmadı)")
-        print(f"[{time.strftime('%H:%M:%S')}] 🕐 Grace Period: {BOT_GRACE_PERIOD_SECONDS} saniye boyunca eski mesajlara yanıt verilmeyecek")
-        print(f"[{time.strftime('%H:%M:%S')}] 🚀 Bot hazır! Grace period bittikten sonra yeni /ai komutlarına yanıt verecek.")
+        print(f"[{time.strftime('%H:%M:%S')}] ⏰ initial_scan_complete_time SET EDİLDİ: {self.initial_scan_complete_time}")
+        print(f"[{time.strftime('%H:%M:%S')}] 🚀 Bot hazır! Artık yeni /ai komutlarına yanıt verecek.")
 
     # Bu yardımcı fonksiyonlar değişmedi
     def filter_non_bmp_chars(self, text):
@@ -208,6 +208,78 @@ class RedditChatBot:
         words = response.split();
         if len(words) <= 30: return response
         else: summary = " ".join(words[:25]); return f"{summary}... (detaylı yanıt verildi)"
+    
+    def filter_thinking_mode(self, raw_response):
+        """
+        AI Studio thinking mode yanıtlarını filtreler, sadece final answer'ı döndürür.
+        """
+        if not raw_response:
+            return raw_response
+            
+        # Thinking mode pattern'lerini temizle
+        lines = raw_response.split('\n')
+        filtered_lines = []
+        skip_mode = False
+        
+        thinking_patterns = [
+            "**Initiating", "**Expanding", "**Research", "**Analysis", 
+            "**Thinking", "**Processing", "**Examining", "**Delving",
+            "**Starting", "**Beginning", "**Continuing"
+        ]
+        
+        for line in lines:
+            line_stripped = line.strip()
+            
+            # Thinking mode başlığı tespit et
+            is_thinking_header = any(pattern in line_stripped for pattern in thinking_patterns)
+            
+            if is_thinking_header:
+                skip_mode = True
+                continue
+                
+            # Boş satır thinking mode'u bitirebilir (ama emin olmak için devam et)
+            if not line_stripped:
+                if skip_mode:
+                    # Bir sonraki içerikli satıra bak, thinking devam ediyor mu?
+                    continue
+                else:
+                    filtered_lines.append(line)
+                    continue
+            
+            # Normal metin - thinking mode değilse ekle
+            if not skip_mode:
+                filtered_lines.append(line)
+            else:
+                # Thinking mode'dayken gerçek yanıt başlayabilir
+                # u/ ile başlıyorsa (kullanıcı mention) veya normal cümle ise thinking bitti
+                if (line_stripped.startswith('u/') or 
+                    (len(line_stripped.split()) > 3 and not any(pattern in line_stripped for pattern in thinking_patterns))):
+                    skip_mode = False
+                    filtered_lines.append(line)
+        
+        result = '\n'.join(filtered_lines).strip()
+        
+        # Eğer çok az içerik kaldıysa, son paragrafı al
+        if len(result.split()) < 10:
+            paragraphs = raw_response.split('\n\n')
+            if len(paragraphs) > 1:
+                # En son boş olmayan paragrafı al
+                for p in reversed(paragraphs):
+                    if p.strip() and len(p.split()) > 5:
+                        result = p.strip()
+                        break
+        
+        # Son kontrol - hala çok kısa ise orijinali döndür ama kırp
+        if len(result.split()) < 5:
+            # Orijinal yanıtın son 200 kelimesini al
+            words = raw_response.split()
+            if len(words) > 200:
+                result = ' '.join(words[-200:])
+            else:
+                result = raw_response
+        
+        print(f"[{time.strftime('%H:%M:%S')}] 🧹 Thinking mode filtresi: {len(raw_response)} -> {len(result)} karakter")
+        return result
     
     def generate_ai_response(self, prompt_from_message_manager):
         try:
@@ -245,7 +317,9 @@ class RedditChatBot:
             raw_reply_from_api = response_data['choices'][0]['message']['content']
             print(f"[{time.strftime('%H:%M:%S')}] 🎉 AI yanıtı başarıyla alındı! (Uzunluk: {len(raw_reply_from_api)} karakter)")
             
-            filtered_reply_chars = self.filter_non_bmp_chars(raw_reply_from_api)
+            # Thinking mode filtresi - sadece final answer'ı al
+            filtered_reply = self.filter_thinking_mode(raw_reply_from_api)
+            filtered_reply_chars = self.filter_non_bmp_chars(filtered_reply)
             summary_for_context = self.create_response_summary(filtered_reply_chars)
             self.context_manager_instance.add_my_response(filtered_reply_chars, summary_for_context)
             
@@ -272,11 +346,11 @@ class RedditChatBot:
         print(f"[{time.strftime('%H:%M:%S')}] Mesajlar arası bekleme: {self.MESSAGE_SEND_DELAY} saniye.")
         print("="*50 + "\n")
 
-        # Grace period'u başlat
-        self.grace_period_start_time = datetime.now()
-        print(f"[{time.strftime('%H:%M:%S')}] 🕐 Grace Period başladı: {BOT_GRACE_PERIOD_SECONDS} saniye boyunca eski mesajlara yanıt verilmeyecek.")
-
         self.populate_initial_context()
+
+        # Grace period'u başlangıç taraması SONRASINDA başlat
+        self.grace_period_start_time = datetime.now()
+        print(f"[{time.strftime('%H:%M:%S')}] 🕐 Grace Period başladı: {BOT_GRACE_PERIOD_SECONDS} saniye boyunca yanıt verilmeyecek.")
         
         consecutive_dom_failures = 0
         max_consecutive_failures = 5
