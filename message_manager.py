@@ -6,163 +6,88 @@ import traceback
 import hashlib
 from datetime import datetime
 from selenium.webdriver.common.keys import Keys
-from selenium.common.exceptions import JavascriptException
-import pyperclip
+from selenium.common.exceptions import JavascriptException, TimeoutException
 
 from config import (
     INITIAL_MESSAGES_TO_READ
 )
 
-# Console'da Çalışan Gerçek Reddit Monitor - DOM/monitor.js'den alındı
+# Console'da Çalışan Gerçek Reddit Monitor - DOM/monitor.js'den alındı ve geliştirildi
 MESSAGE_READER_JS = """
-class RefreshFreeRedditMonitor {
-    constructor() {
-        this.version = "3.0.0";
-        this.isActive = false;
-        this.stats = {
-            messagesFound: 0,
-            newMessagesCaught: 0,
-            aiCommandsDetected: 0,
-            forceLoadAttempts: 0
-        };
-        
-        // Tracking state
-        this.lastMessageCount = 0;
-        this.lastMessages = [];
-        this.processedMessageIds = new Set();
-        this.intervals = [];
-        
-        // Real-time config
-        this.config = {
-            checkInterval: 2000,        // 2 saniyede bir kontrol
-            forceLoadInterval: 15000,   // 15 saniyede bir force load
-            scrollTriggerInterval: 8000, // 8 saniyede bir scroll trigger
-            maxConsecutiveNoChange: 10   // 10 kez değişiklik yoksa force action
-        };
-        
-        this.consecutiveNoChange = 0;
-        this.shadowElements = {};
-        this.callbacks = [];
-        
-        console.log("🚀 Refresh-Free Reddit Monitor v3.0.0 başlatıldı!");
-        this.initialize();
-    }
-    
-    initialize() {
-        this.findShadowElements();
-        this.isActive = true;
-        
-        window.RefreshFreeMonitor = this;
-        this.log("✅ Refresh-free monitor aktif!");
-    }
-    
-    // SHADOW DOM ELEMENTLERİNİ BUL
-    findShadowElements() {
-        this.log("🔍 Shadow DOM elementleri aranıyor...");
-        
-        try {
-            // rs-app shadow root
-            const rsApp = document.querySelector('rs-app');
-            if (rsApp && rsApp.shadowRoot) {
-                this.shadowElements.rsApp = rsApp.shadowRoot;
-                
-                // rs-room shadow root
-                const rsRoom = this.shadowElements.rsApp.querySelector('rs-room');
-                if (rsRoom && rsRoom.shadowRoot) {
-                    this.shadowElements.rsRoom = rsRoom.shadowRoot;
-                    
-                    // rs-timeline shadow root
-                    const rsTimeline = this.shadowElements.rsRoom.querySelector('rs-timeline');
-                    if (rsTimeline && rsTimeline.shadowRoot) {
-                        this.shadowElements.rsTimeline = rsTimeline.shadowRoot;
-                        
-                        // rs-virtual-scroll shadow root
-                        const virtualScroll = this.shadowElements.rsTimeline.querySelector('rs-virtual-scroll-dynamic');
-                        if (virtualScroll && virtualScroll.shadowRoot) {
-                            this.shadowElements.virtualScroll = virtualScroll.shadowRoot;
-                        }
-                    }
-                    
-                    // rs-message-composer shadow root
-                    const rsComposer = this.shadowElements.rsRoom.querySelector('rs-message-composer');
-                    if (rsComposer && rsComposer.shadowRoot) {
-                        this.shadowElements.rsComposer = rsComposer.shadowRoot;
+return (function(processedIdsArray) {
+    // ====================================================================================
+    //              HYBRID MESSAGE READER (v5.1 - STABLE ID FIX)
+    // - Fikri: 'monitor.js'in daha sağlam yazar bulma tekniği ile geliştirildi.
+    // - Asla tekrar etmeyen, kriptografik ID üretimi korundu.
+    // - Dışarıdan 'processedIds' alarak zaten işlenmiş mesajları filtreler.
+    // - *** YENİ: Stabil ID üretilemeyen (örn. timestamp'ı olmayan) mesajları
+    // - *** atlayarak sonsuz döngüye girmesini engeller.
+    // ====================================================================================
+
+    const processedIds = new Set(processedIdsArray || []);
+
+    // 1. Shadow DOM elementlerini güvenilir bir şekilde bul
+    // ------------------------------------------------------------------------------------
+    let virtualScrollRoot = null;
+    try {
+        const rsApp = document.querySelector('rs-app');
+        if (rsApp && rsApp.shadowRoot) {
+            const rsRoom = rsApp.shadowRoot.querySelector('rs-room');
+            if (rsRoom && rsRoom.shadowRoot) {
+                const rsTimeline = rsRoom.shadowRoot.querySelector('rs-timeline');
+                if (rsTimeline && rsTimeline.shadowRoot) {
+                    const virtualScroll = rsTimeline.shadowRoot.querySelector('rs-virtual-scroll-dynamic');
+                    if (virtualScroll && virtualScroll.shadowRoot) {
+                        virtualScrollRoot = virtualScroll.shadowRoot;
                     }
                 }
             }
-            
-            this.log(`✅ Shadow elementler bulundu: ${Object.keys(this.shadowElements).length} adet`);
-            return true;
-        } catch (e) {
-            this.log(`❌ Shadow element bulma hatası: ${e.message}`);
-            return false;
         }
+    } catch (e) {
+        console.error("Hata: Shadow DOM bulunamadı!", e);
+        return []; // Hata durumunda boş liste dön
+    }
+
+    if (!virtualScrollRoot) {
+        console.error("Hata: Mesajların bulunduğu 'virtualScrollRoot' elementine ulaşılamadı.");
+        return [];
     }
     
-    // DOM'DAN MESAJLARI AL
-    getMessagesFromDOM() {
-        if (!this.shadowElements.virtualScroll) {
-            this.findShadowElements(); // Yeniden dene
-            if (!this.shadowElements.virtualScroll) return [];
+    // 2. Güvenilir ve Kriptografik ID Üretim Fonksiyonu
+    // ------------------------------------------------------------------------------------
+    const cyrb53 = (str, seed = 0) => {
+        let h1 = 0xdeadbeef ^ seed, h2 = 0x41c6ce57 ^ seed;
+        for(let i = 0, ch; i < str.length; i++) {
+            ch = str.charCodeAt(i);
+            h1 = Math.imul(h1 ^ ch, 2654435761);
+            h2 = Math.imul(h2 ^ ch, 1597334677);
         }
-        
+        h1  = Math.imul(h1 ^ (h1 >>> 16), 2246822507);
+        h1 ^= Math.imul(h2 ^ (h2 >>> 13), 3266489909);
+        h2  = Math.imul(h2 ^ (h2 >>> 16), 2246822507);
+        h2 ^= Math.imul(h1 ^ (h1 >>> 13), 3266489909);
+        return 4294967296 * (2097151 & h2) + (h1 >>> 0);
+    };
+
+    // 3. Her mesaj elementi için veri çıkarma fonksiyonu
+    // ------------------------------------------------------------------------------------
+    function getMessageData(msgElement, index, lastKnownAuthor) {
         try {
-            const timelineEvents = this.shadowElements.virtualScroll.querySelectorAll('rs-timeline-event');
-            const messages = [];
-            
-            // İlk geçişte tüm kullanıcı adlarını topla (doğru sıralama için)
-            let lastSeenAuthor = null;
-            
-            timelineEvents.forEach((event, index) => {
-                const messageData = this.extractMessageData(event, index, lastSeenAuthor);
-                if (messageData) {
-                    messages.push(messageData);
-                    // Eğer bu mesajda gerçek bir yazar varsa, bir sonraki için güncelle
-                    if (messageData.author && messageData.author !== 'Bilinmeyen' && messageData.hasActualAuthor) {
-                        lastSeenAuthor = messageData.author;
-                    }
-                }
-            });
-            
-            return messages;
-        } catch (e) {
-            this.log(`❌ DOM mesaj alma hatası: ${e.message}`);
-            return [];
-        }
-    }
-    
-    // MESAJ VERİSİNİ ÇIKAR - GELİŞTİRİLMİŞ KULLANICI TAKİBİ
-    extractMessageData(eventElement, index, lastSeenAuthor) {
-        try {
-            if (!eventElement.shadowRoot) return null;
-            
-            const shadowRoot = eventElement.shadowRoot;
-            
-            // Mesaj metni
-            let messageText = '';
-            try {
-                const textElement = shadowRoot.querySelector('div.room-message-text.truncated');
-                if (textElement) {
-                    messageText = textElement.textContent.trim();
-                }
-            } catch (e) {}
-            
-            // Yazar arama - geliştirilmiş mantık
+            if (!msgElement || !msgElement.shadowRoot) return null;
+            const shadowRoot = msgElement.shadowRoot;
+
+            // Yazar (monitor.js'den gelen daha sağlam yöntem)
             let author = null;
-            let hasActualAuthor = false; // Gerçek yazar bulundu mu?
-            
+            let authorFound = false;
             try {
                 const authorSelectors = [
-                    'faceplate-tracker[noun="user_hovers"] > span[slot="trigger"]',
-                    '.room-message-author',
                     'span.user-name',
-                    'div[slot="author"] span',
-                    '[data-testid*="author"] span'
+                    'faceplate-tracker[noun="user_hovers"] > span[slot="trigger"]',
+                    '.room-message-author'
                 ];
-                
                 for (const selector of authorSelectors) {
                     const authorElement = shadowRoot.querySelector(selector);
-                    if (authorElement) {
+                    if (authorElement && authorElement.textContent.trim()) {
                         let authorText = authorElement.textContent.trim();
                         if (authorText.includes(' replied')) {
                             authorText = authorText.split(' replied')[0];
@@ -170,112 +95,91 @@ class RefreshFreeRedditMonitor {
                         if (authorText.startsWith('u/')) {
                             authorText = authorText.substring(2);
                         }
-                        if (authorText && authorText.length > 0) {
+
+                        // Eğer bulunan yazar metni '[deleted]' ise, bunu "bulunamadı" olarak
+                        // kabul et ve aramaya devam et. Bu, son bilinen yazara geri
+                        // dönmemizi sağlar.
+                        if (authorText && authorText !== '[deleted]') {
                             author = authorText;
-                            hasActualAuthor = true;
-                            this.log(`👤 Gerçek yazar bulundu: ${author}`);
+                            authorFound = true;
                             break;
                         }
                     }
                 }
-                
-                // Eğer gerçek yazar bulunamadıysa, son bilinen kullanıcıyı kullan
-                if (!hasActualAuthor && lastSeenAuthor) {
-                    author = lastSeenAuthor;
-                    this.log(`🔄 Son bilinen kullanıcı kullanılıyor: ${author}`);
-                } else if (!hasActualAuthor) {
-                    author = 'Bilinmeyen';
-                    this.log(`❓ Kullanıcı bulunamadı, 'Bilinmeyen' kullanılıyor`);
-                }
-                
-            } catch (e) {
-                // Hata durumunda da son bilinen kullanıcıyı dene
-                if (lastSeenAuthor) {
-                    author = lastSeenAuthor;
-                } else {
-                    author = 'Bilinmeyen';
-                }
+            } catch (e) { /* Yazar bulunamazsa null kalır */ }
+
+            const messageText = shadowRoot.querySelector('div.room-message-text')?.textContent.trim() || '';
+            if (!messageText) return null;
+            
+            // Eğer bu mesaj elementinde yeni bir yazar bulunamadıysa, son bilinen yazarı kullan.
+            if (!authorFound && lastKnownAuthor) {
+                author = lastKnownAuthor;
+            } else if (!author) {
+                author = '[deleted]'; // Hiç yazar bulunamadıysa fallback
             }
+
+            // En güvenilir zaman damgasını al (milisaniye hassasiyetinde)
+            let preciseTimestamp;
+            const timeAgoEl = shadowRoot.querySelector('rs-timestamp');
+            if (timeAgoEl && timeAgoEl.shadowRoot) {
+                const faceplateTimeAgo = timeAgoEl.shadowRoot.querySelector('faceplate-timeago[ts]');
+                 if (faceplateTimeAgo) {
+                    preciseTimestamp = faceplateTimeAgo.getAttribute('ts');
+                 }
+            }
+            if (!preciseTimestamp) {
+                // ID için kullanılmayacak, sadece bağlam için bir zaman damgası sağlıyoruz.
+                preciseTimestamp = new Date().toISOString(); 
+            }
+
+            const contentHash = cyrb53(messageText);
+            // STABILITE DÜZELTMESI: ID artık DOM'da hemen bulunamayabilen zaman damgasına
+            // bağlı değil. Bu, hem sonsuz döngüleri hem de mesajların atlanmasını önler.
+            // ID artık her zaman mevcut olan yazar ve içerik özetine dayanmaktadır.
+            const trulyStableId = `${author}_${contentHash}`;
             
-            // Timestamp
-            let timestamp = new Date().toLocaleTimeString('tr-TR');
-            try {
-                const timeElement = shadowRoot.querySelector('rs-timestamp time-stamp > span');
-                if (timeElement) {
-                    timestamp = timeElement.textContent.trim();
-                }
-            } catch (e) {}
-            
-            // TUTARLI ID oluştur (content-based, time-independent)
-            const contentHash = btoa(messageText + author).substring(0, 16); // Base64 hash
-            const id = `${author}_${contentHash}_${index}`;
-            
-            if (!messageText && !author) return null;
-            
+            // ID'nin daha önce işlenip işlenmediğini kontrol et
+            if (processedIds.has(trulyStableId)) {
+                return null; // Zaten işlenmişse atla
+            }
+
+            const isOwn = (shadowRoot.querySelector('.flex-row-reverse') !== null);
+
             return {
-                id: id,
+                id: trulyStableId,
                 text: messageText,
                 author: author,
-                timestamp: timestamp,
-                element: eventElement,
-                hasActualAuthor: hasActualAuthor // Gerçek yazar olup olmadığını işaretle
+                authorFound: authorFound, // Bu bilgiyi döngüye geri döndür
+                timestamp: preciseTimestamp,
+                isOwn: isOwn
             };
-            
         } catch (e) {
+            console.error("Mesaj parse hatası:", e);
             return null;
         }
     }
-    
-    // EN SON MESAJLARI AL (mj2.js'deki getLatestMessages mantığı)
-    getLatestMessages(count = 10) {
-        const messages = this.getMessagesFromDOM();
-        return messages.slice(-count);
-    }
-    
-    // /AI KOMUTLARINI AL (mj2.js'deki getAICommands mantığı)
-    getAICommands() {
-        const messages = this.getMessagesFromDOM();
-        return messages.filter(msg => msg.text.toLowerCase().startsWith('/ai '));
-    }
-    
-    // LOG
-    log(message) {
-        console.log(`[RefreshFreeMonitor] ${message}`);
-    }
-    
-    startTime = Date.now();
-}
 
-// BOT İÇİN MESAJ ALMA FONKSİYONU
-try {
-    const monitor = new RefreshFreeRedditMonitor();
-    const allMessages = monitor.getMessagesFromDOM();
+    // 4. Tüm mesajları işle ve sonucu dön
+    // ------------------------------------------------------------------------------------
+    const allMessageElements = virtualScrollRoot.querySelectorAll('rs-timeline-event');
+    if (!allMessageElements.length) return [];
+
+    const processedMessages = [];
+    let lastValidAuthor = null; // Son "gerçek" yazarı takip et
+    for (let i = 0; i < allMessageElements.length; i++) {
+        const msgData = getMessageData(allMessageElements[i], i, lastValidAuthor);
+        if (msgData) {
+            processedMessages.push(msgData);
+            // Eğer bu mesajda yeni bir yazar etiketi bulunduysa, bir sonraki isimsiz
+            // mesajlar için onu "son geçerli yazar" olarak ayarla.
+            if (msgData.authorFound) {
+                lastValidAuthor = msgData.author;
+            }
+        }
+    }
     
-    // Bot'un istediği format için convert et
-    const convertedMessages = allMessages.map(msg => ({
-        text: msg.text,
-        author: msg.author,
-        timestamp: msg.timestamp,
-        isOwn: msg.author.toLowerCase() === '%(bot_username)s'.toLowerCase()
-    }));
-    
-    // En son N mesajı al
-    const latestMessages = convertedMessages.slice(-%(message_limit)s);
-    
-    console.log(`[RefreshFreeMonitor] Bot için ${latestMessages.length} mesaj hazırlandı`);
-    
-    // Kullanıcı dağılımını göster (debug için)
-    const userCounts = {};
-    latestMessages.forEach(msg => {
-        userCounts[msg.author] = (userCounts[msg.author] || 0) + 1;
-    });
-    console.log(`[RefreshFreeMonitor] Kullanıcı dağılımı:`, userCounts);
-    
-    return latestMessages;
-} catch (e) {
-    console.log(`[RefreshFreeMonitor] HATA: ${e.message}`);
-    return [];
-}
+    return processedMessages;
+})(arguments[0] || []);
 """
 
 class MessageManager:
@@ -295,42 +199,83 @@ class MessageManager:
             cleaned = cleaned[2:]
         return cleaned if cleaned else "BilinmeyenKullanici"
 
-    def _execute_message_reader_script(self, n):
+    def _execute_message_reader_script(self, processed_ids=[]):
         """
         Tarayıcıda JavaScript kodunu çalıştırır ve mesaj listesini alır.
+        Artık işlenmiş ID'leri de argüman olarak gönderir.
         """
-        try:
-            # JS kodunu bot adı ve mesaj limiti ile formatla
-            script_to_run = MESSAGE_READER_JS % {
-                'bot_username': self.bot_actual_username,
-                'message_limit': n
-            }
-            
-            # Scripti çalıştır ve sonucu al
-            messages_from_js = self.dom_manager.driver.execute_script(script_to_run)
+        max_retries = 2
+        retry_count = 0
+        
+        while retry_count < max_retries:
+            try:
+                # Set script timeout (WebDriver'ın kendi timeout'unu kullan)
+                self.dom_manager.driver.set_script_timeout(10)  # 10 saniye timeout
+                
+                # Scripti çalıştır ve sonucu al, işlenmiş ID'leri argüman olarak gönder
+                messages_from_js = self.dom_manager.driver.execute_script(
+                    MESSAGE_READER_JS,
+                    processed_ids
+                )
 
-            if not messages_from_js or not isinstance(messages_from_js, list):
-                # print(f"[{time.strftime('%H:%M:%S')}] JS'den mesaj alınamadı veya format yanlış.")
+                if messages_from_js is None or not isinstance(messages_from_js, list):
+                    # print(f"[{time.strftime('%H:%M:%S')}] JS'den mesaj alınamadı veya format yanlış.")
+                    if retry_count < max_retries - 1:
+                        print(f"[{time.strftime('%H:%M:%S')}] Mesaj okuma başarısız, {retry_count + 1}/{max_retries} deneme...")
+                        retry_count += 1
+                        time.sleep(1)  # 1 saniye bekle
+                        continue
+                    return []
+
+                if len(messages_from_js) == 0:
+                    # Bu artık beklenen bir durum olabilir (yeni mesaj yoksa)
+                    # Bu yüzden log mesajını kaldırdım.
+                    pass
+                
+                return messages_from_js
+                
+            except JavascriptException as e:
+                print(f"[{time.strftime('%H:%M:%S')}] Mesaj okuma script'i JavaScript hatası (deneme {retry_count + 1}/{max_retries}): {e}")
+                if retry_count < max_retries - 1:
+                    retry_count += 1
+                    time.sleep(2)  # JavaScript hatası varsa biraz daha bekle
+                    continue
                 return []
+            except TimeoutException as e:
+                print(f"[{time.strftime('%H:%M:%S')}] Mesaj okuma script'i timeout (deneme {retry_count + 1}/{max_retries}): {e}")
+                if retry_count < max_retries - 1:
+                    retry_count += 1
+                    time.sleep(2)
+                    continue
+                return []
+            except Exception as e:
+                print(f"[{time.strftime('%H:%M:%S')}] Mesaj okuma script'i genel hata (deneme {retry_count + 1}/{max_retries}): {e}")
+                if retry_count < max_retries - 1:
+                    retry_count += 1
+                    time.sleep(1)
+                    continue
+                return []
+        
+        return []  # Tüm denemeler başarısız
 
-            return messages_from_js
-        except JavascriptException as e:
-            print(f"[{time.strftime('%H:%M:%S')}] Mesaj okuma script'i çalıştırılırken JavaScript hatası: {e}")
-            return []
-        except Exception as e:
-            print(f"[{time.strftime('%H:%M:%S')}] Mesaj okuma script'i çalıştırılırken genel hata: {e}")
-            return []
-
-    def get_last_n_messages(self, n=INITIAL_MESSAGES_TO_READ, initial_scan=False):
+    def get_last_n_messages(self, n=10, initial_scan=False, filter_processed=True):
         """
         Yeni, akıllı JS tabanlı mesaj alma yöntemi.
+        JS tarafı artık filtrelemeyi yaptığı için 'n' parametresi bir ipucu olarak kaldı.
         """
-        raw_messages = self._execute_message_reader_script(n)
-        if not raw_messages:
+        processed_ids_to_filter = []
+        if filter_processed:
+            # Sadece filtrelenmesi istendiğinde işlenmiş ID'leri kullan
+            processed_ids_to_filter = list(self.processed_event_ids)
+        
+        # JS tarafı filtrelemeyi yapıyor.
+        raw_messages_json = self._execute_message_reader_script(processed_ids=processed_ids_to_filter)
+        
+        if not raw_messages_json:
             return []
 
         processed_messages = []
-        for msg_data in raw_messages:
+        for msg_data in raw_messages_json:
             # JS'den gelen veriyi standart formatımıza çeviriyoruz
             author = self._clean_username(msg_data.get('author'))
             text = msg_data.get('text', '').strip()
@@ -361,75 +306,177 @@ class MessageManager:
                 'timestamp': timestamp
             })
         
-        # JS kodumuz mesajları zaten doğru (eskiden yeniye) sırada veriyor.
-        # Bot döngüsü en son mesajı beklediği için listeyi tersine çeviriyoruz.
-        return list(reversed(processed_messages))
+        # JS kodumuz mesajları artık doğru chronological sırada (eskiden yeniye) veriyor.
+        # En son mesaj listede en sonda olacak, bu yüzden ters çevirmeye gerek yok.
+        return processed_messages
 
     def get_last_message_with_user(self):
         """
-        En son mesajı ve yazarını alır.
+        En son İŞLENMEMİŞ mesajı ve yazarını alır.
         """
         try:
-            # Son birkaç mesajı almak genellikle en son olanı doğru bulmak için yeterlidir.
-            messages = self.get_last_n_messages(n=5, initial_scan=False)
+            # JS tarafı zaten filtreleyeceği için 5 mesaj istemek yeterli
+            messages = self.get_last_n_messages(n=5, initial_scan=False, filter_processed=True)
             if messages:
-                last_msg = messages[0] # Liste ters çevrildiği için ilk eleman en yenisidir.
+                last_msg = messages[-1] 
                 return last_msg['text'], last_msg['user'], last_msg['id'], last_msg['timestamp']
-            return "", "BilinmeyenKullanici", None, None
+            else:
+                # EĞER HİÇ YENİ MESAJ YOKSA BURASI ÇALIŞIR
+                return None, None, None, None
         except Exception as e:
             print(f"[{time.strftime('%H:%M:%S')}] get_last_message_with_user hatası: {e}")
             traceback.print_exc()
-            return "", "BilinmeyenKullanici", None, None
+            return None, None, None, None
 
     def send_message(self, message):
         """
-        Mesaj gönderme fonksiyonu - Read-only modda uyarı verir
+        Çalışan area-button.js kodunu kullanan mesaj gönderme fonksiyonu
         """
         try:
             if not message or not message.strip():
                 print(f"[{time.strftime('%H:%M:%S')}] UYARI: Boş mesaj gönderilmeye çalışıldı. Atlanıyor.")
                 return True
 
-            # Read-only mod kontrolü
-            input_area = self.dom_manager.dom_elements.get('message_input_area')
-            if not input_area:
-                print(f"[{time.strftime('%H:%M:%S')}] READ-ONLY MOD: Mesaj gönderme alanı yok. Mesaj: '{message[:50]}...'")
-                return False  # Mesaj gönderilmedi ama hata değil
+            print(f"[{time.strftime('%H:%M:%S')}] Mesaj gönderiliyor: '{message[:50]}...'")
             
-            if not self.dom_manager.is_dom_healthy():
-                print(f"[{time.strftime('%H:%M:%S')}] Mesaj göndermeden önce DOM sağlıksız, yeniden initialize deneniyor...")
-                if not self.dom_manager.reinitialize_dom_elements():
-                     print(f"[{time.strftime('%H:%M:%S')}] DOM yeniden initialize edilemedi, mesaj gönderilemiyor.")
-                     return False
+            # area-button.js'teki çalışan kod
+            send_message_script = f"""
+            async function sendMessageWithWorkingLogic(messageText) {{
+                let foundInput = null;
+                
+                // Önceki çalışan nested shadow DOM arama fonksiyonu
+                function searchInShadowRoot(shadowRoot, depth = 0) {{
+                    const indent = "  ".repeat(depth);
+                    
+                    // Bu shadow root'da textarea ara
+                    const textareas = shadowRoot.querySelectorAll('textarea');
+                    textareas.forEach(textarea => {{
+                        if (textarea.name === 'message' || 
+                            (textarea.placeholder && textarea.placeholder.toLowerCase().includes('message')) ||
+                            (textarea.getAttribute('aria-label') && textarea.getAttribute('aria-label').toLowerCase().includes('message'))) {{
+                            console.log(`${{indent}}🎯 MESAJ ALANI BULUNDU!`);
+                            foundInput = textarea;
+                        }}
+                    }});
+                    
+                    // Nested shadow root'ları ara
+                    const nestedElements = shadowRoot.querySelectorAll('*');
+                    nestedElements.forEach(element => {{
+                        if (element.shadowRoot) {{
+                            searchInShadowRoot(element.shadowRoot, depth + 1);
+                        }}
+                    }});
+                }}
+                
+                // Ana shadow root'ları ara
+                document.querySelectorAll('*').forEach(element => {{
+                    if (element.shadowRoot) {{
+                        searchInShadowRoot(element.shadowRoot, 0);
+                    }}
+                }});
+                
+                if (!foundInput) {{
+                    console.log("❌ Mesaj alanı hala bulunamadı!");
+                    return false;
+                }}
+                
+                console.log("✅ Mesaj alanı bulundu! Mesaj yazılıyor...");
+                
+                // Mesajı yaz
+                foundInput.focus();
+                foundInput.value = messageText;
+                
+                // Event'leri tetikle
+                ['input', 'change', 'keyup', 'keydown'].forEach(eventType => {{
+                    const event = new Event(eventType, {{ bubbles: true }});
+                    foundInput.dispatchEvent(event);
+                }});
+                
+                console.log("✅ Mesaj yazıldı:", messageText);
+                
+                // Send butonunu bul (aynı mantıkla)
+                return new Promise((resolve) => {{
+                    setTimeout(() => {{
+                        console.log("📤 Send butonu aranıyor...");
+                        
+                        let foundSendButton = null;
+                        
+                        function searchSendButton(shadowRoot, depth = 0) {{
+                            const buttons = shadowRoot.querySelectorAll('button');
+                            buttons.forEach(button => {{
+                                const ariaLabel = button.getAttribute('aria-label') || '';
+                                
+                                if (ariaLabel.toLowerCase() === 'send message' && !button.disabled) {{
+                                    console.log(`🎯 AKTIF SEND BUTONU BULUNDU!`);
+                                    foundSendButton = button;
+                                }}
+                            }});
+                            
+                            // Nested shadow root'ları ara
+                            const nestedElements = shadowRoot.querySelectorAll('*');
+                            nestedElements.forEach(element => {{
+                                if (element.shadowRoot) {{
+                                    searchSendButton(element.shadowRoot, depth + 1);
+                                }}
+                            }});
+                        }}
+                        
+                        // Ana shadow root'ları ara
+                        document.querySelectorAll('*').forEach(element => {{
+                            if (element.shadowRoot) {{
+                                searchSendButton(element.shadowRoot, 0);
+                            }}
+                        }});
+                        
+                        if (foundSendButton) {{
+                            console.log("✅ Send butonuna tıklanıyor...");
+                            foundSendButton.click();
+                            console.log("🎉 MESAJ GÖNDERİLDİ!");
+                            resolve(true);
+                        }} else {{
+                            console.log("❌ Aktif send butonu bulunamadı. Enter tuşu ile deneniyor...");
+                            
+                            // Enter tuşu
+                            const enterEvent = new KeyboardEvent('keydown', {{
+                                key: 'Enter',
+                                keyCode: 13,
+                                which: 13,
+                                bubbles: true
+                            }});
+                            foundInput.dispatchEvent(enterEvent);
+                            
+                            const enterUpEvent = new KeyboardEvent('keyup', {{
+                                key: 'Enter',
+                                keyCode: 13,
+                                which: 13,
+                                bubbles: true
+                            }});
+                            foundInput.dispatchEvent(enterUpEvent);
+                            
+                            console.log("⌨️ Enter tuşu gönderildi!");
+                            resolve(true);
+                        }}
+                    }}, 1500);
+                }});
+            }}
             
-            input_area = self.dom_manager.dom_elements['message_input_area']
+            // Mesajı gönder ve sonucu döndür
+            return await sendMessageWithWorkingLogic(`{message.replace("`", "\\`").replace("$", "\\$")}`);
+            """
             
-            original_clipboard_content = pyperclip.paste()
-            pyperclip.copy(message)
+            # JavaScript'i çalıştır
+            result = self.dom_manager.driver.execute_script(send_message_script)
             
-            input_area.click()
-            time.sleep(0.1)
-            input_area.send_keys(Keys.CONTROL + "a")
-            input_area.send_keys(Keys.DELETE)
-            time.sleep(0.1)
-            input_area.send_keys(Keys.CONTROL + "v")
-            time.sleep(0.2)
-            input_area.send_keys(Keys.ENTER)
-            
-            if original_clipboard_content is not None:
-                pyperclip.copy(original_clipboard_content)
+            if result:
+                print(f"[{time.strftime('%H:%M:%S')}] ✅ Mesaj başarıyla gönderildi!")
+                return True
             else:
-                try: pyperclip.copy("")
-                except: pass
-
-            return True
+                print(f"[{time.strftime('%H:%M:%S')}] ❌ Mesaj gönderilemedi!")
+                return False
+                
         except Exception as e:
             print(f"[{time.strftime('%H:%M:%S')}] Mesaj gönderme hatası: {e}")
-            try: 
-                if 'original_clipboard_content' in locals() and original_clipboard_content is not None: 
-                    pyperclip.copy(original_clipboard_content)
-                else: pyperclip.copy("")
-            except Exception: pass
+            traceback.print_exc()
             return False
 
     def handle_message_for_context(self, message_content, username_original_case, msg_id, timestamp_str, initial_scan_complete_time, is_already_marked_processed_in_loop=False):

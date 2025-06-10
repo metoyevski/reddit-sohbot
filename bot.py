@@ -20,7 +20,6 @@ from config import (
     INITIAL_MESSAGES_TO_READ, LOGIN_WAIT_TIME, PAGE_LOAD_TIMEOUT,
     MAIN_LOOP_SLEEP, PERIODIC_DOM_CHECK_INTERVAL_LOOPS
 )
-from archive_manager import UserArchiveManager
 from context_manager import ContextManager
 from dom_manager import ChatDOMManager
 from message_manager import MessageManager
@@ -37,7 +36,6 @@ class RedditChatBot:
         self.dom_manager = None
         self.message_manager = None
         self.context_manager_instance = ContextManager(max_size=CONTEXT_WINDOW_SIZE)
-        self.user_archive_manager = UserArchiveManager()
         self.initial_scan_complete_time = None
         self.MESSAGE_SEND_DELAY = 2.5 # Hafifçe ayarlandı
         self.DAN_SYSTEM_PROMPT = f"""Eleştirel ve sorgulayıcı bir yapay zekâ asistanısın. Bu bağlamda, sana /ai ile yazılan promptları alacaksın ve u/username (mesela u/birbenimiunuttalar) diyerek kim yazdıysa onun sorusuna düzgünce, felsefî temellendirilmiş yanıt vereceksin. Yanıtlarında her daim bir taraf tutacaksın ve hangi taraf daha rasyonelse, felsefÎ bir biçimde gerekçelendirerek onun neden haklı olduğunu söyleyeceksin. Asla tarafsız olmayacaksın:"""
@@ -140,41 +138,54 @@ class RedditChatBot:
 
     def populate_initial_context(self):
         print(f"[{time.strftime('%H:%M:%S')}] Başlangıç bağlamı toplanıyor (yeni akıllı yöntemle)...")
-        try:
-            # Yeni yöntemle başlangıç mesajlarını al
-            initial_messages = self.message_manager.get_last_n_messages(n=INITIAL_MESSAGES_TO_READ, initial_scan=True)
-            if not initial_messages:
-                 print(f"[{time.strftime('%H:%M:%S')}] Başlangıç taramasında hiç mesaj bulunamadı.")
-                 return
+        
+        # Başlangıçta TÜM mesajları al (filtreleme olmadan)
+        initial_messages = self.message_manager.get_last_n_messages(
+            n=INITIAL_MESSAGES_TO_READ, 
+            initial_scan=True, 
+            filter_processed=False # << ÖNEMLİ: Filtreleme kapalı
+        )
+        
+        if not initial_messages:
+            print(f"[{time.strftime('%H:%M:%S')}] Başlangıç taramasında hiç mesaj bulunamadı.")
+            return
 
-            print(f"[{time.strftime('%H:%M:%S')}] Başlangıç için {len(initial_messages)} mesaj işleniyor...")
-            # Mesajlar zaten eskiden yeniye doğru geliyor, bu yüzden ters çevirmemize gerek yok.
-            for msg_data in reversed(initial_messages): # En yeniden eskiye doğru işleyerek bağlamı doldur
-                text, user, msg_id, timestamp = msg_data['text'], msg_data['user'], msg_data['id'], msg_data['timestamp']
-                
-                if msg_id in self.message_manager.processed_event_ids: continue
-                
-                # Botun kendi mesajlarını kendi bağlamına ekle
-                if user.lower() == self.bot_username.lower():
-                    self.context_manager_instance.add_my_response(text, self.create_response_summary(text), timestamp)
-                else: # Diğer kullanıcıların mesajları
-                    self.context_manager_instance.add_user_message(user, text, timestamp)
-                    if user != "BilinmeyenKullanici":
-                        self.user_archive_manager.log_message(user, text, timestamp)
-                
-                self.message_manager.processed_event_ids.add(msg_id)
-
-            # Son görülen mesajı ayarla (listeyi ters çevirdiğimiz için ilki en yeniydi)
-            self.message_manager.last_seen_message_content = initial_messages[0]['text']
-            self.message_manager.last_seen_message_user = initial_messages[0]['user']
+        print(f"[{time.strftime('%H:%M:%S')}] Başlangıç için {len(initial_messages)} mesaj işleniyor...")
+        # Mesajlar artık doğru chronological sırada geliyorlar (eskiden yeniye)
+        # Bu yüzden sırayı bozmaya gerek yok
+        ai_commands_found = 0
+        total_processed = 0
+        
+        for msg_data in initial_messages:
+            text, user, msg_id, timestamp = msg_data['text'], msg_data['user'], msg_data['id'], msg_data['timestamp']
             
-        except Exception as e:
-            print(f"[{time.strftime('%H:%M:%S')}] Başlangıç bağlamı toplama hatası: {e}")
-            print(traceback.format_exc())
-        finally:
-            self.initial_scan_complete_time = datetime.now()
-            print(f"[{time.strftime('%H:%M:%S')}] Başlangıç taraması tamamlandı.")
-            self.user_archive_manager.force_save()
+            if msg_id in self.message_manager.processed_event_ids: continue
+            
+            # Başlangıç taramasında /ai komutlarını say (ama yanıtlama - bu sadece bilgi için)
+            if text.startswith("/ai "):
+                ai_commands_found += 1
+                print(f"[{time.strftime('%H:%M:%S')}] 🤖 Başlangıç: /ai komutu bağlama eklendi (yanıtlanmayacak): '{text[:40]}...' (K: {user})")
+            
+            # Botun kendi mesajlarını kendi bağlamına ekle - hem gerçek username hem HAZIRCEVAP kontrolü
+            is_bot_message = (user.lower() == self.bot_username.lower() or 
+                            user.lower().startswith('hazircevap'))
+            
+            if is_bot_message:
+                self.context_manager_instance.add_my_response(text, self.create_response_summary(text), timestamp)
+            else: # Diğer kullanıcıların mesajları
+                self.context_manager_instance.add_user_message(user, text, timestamp)
+            
+            self.message_manager.processed_event_ids.add(msg_id)
+            total_processed += 1
+
+        # Son görülen mesajı ayarla (artık en yeni mesaj listede en sonda)
+        self.message_manager.last_seen_message_content = initial_messages[-1]['text']
+        self.message_manager.last_seen_message_user = initial_messages[-1]['user']
+        
+        self.initial_scan_complete_time = datetime.now()
+        print(f"[{time.strftime('%H:%M:%S')}] ✅ Başlangıç taraması tamamlandı!")
+        print(f"[{time.strftime('%H:%M:%S')}] 📊 İstatistik: {total_processed} mesaj işlendi, {ai_commands_found} adet /ai komutu bulundu (yanıtlanmadı)")
+        print(f"[{time.strftime('%H:%M:%S')}] 🚀 Bot artık yeni /ai komutlarına yanıt vermeye hazır!")
 
     # Bu yardımcı fonksiyonlar değişmedi
     def filter_non_bmp_chars(self, text):
@@ -194,6 +205,9 @@ class RedditChatBot:
     
     def generate_ai_response(self, prompt_from_message_manager):
         try:
+            print(f"[{time.strftime('%H:%M:%S')}] 🌐 Chat Relay'e bağlanıyor: {self.chat_relay_url}")
+            print(f"[{time.strftime('%H:%M:%S')}] 🤖 Model: {self.chat_relay_model}")
+            
             payload = {
                 "model": self.chat_relay_model,
                 "messages": [
@@ -202,18 +216,29 @@ class RedditChatBot:
                 ], "temperature": 0.7,
             }
             headers = {"Content-Type": "application/json"}
-            response = requests.post(self.chat_relay_url, headers=headers, json=payload, timeout=self.chat_relay_timeout)
+            
+            # Kısa timeout ile dene
+            short_timeout = 30  # 30 saniye
+            print(f"[{time.strftime('%H:%M:%S')}] ⏳ HTTP POST gönderiliyor... (Timeout: {short_timeout}s)")
+            
+            response = requests.post(self.chat_relay_url, headers=headers, json=payload, timeout=short_timeout)
+            
+            print(f"[{time.strftime('%H:%M:%S')}] ✅ Yanıt alındı! Status: {response.status_code}")
 
             if response.status_code != 200:
                 print(f"[{time.strftime('%H:%M:%S')}] HATA: Sunucu yanıtı {response.status_code}. Yanıt: {response.text[:500]}")
                 return f"Üzgünüm, AI servisinden bir hata alındı (Kod: {response.status_code})."
 
+            print(f"[{time.strftime('%H:%M:%S')}] 📄 JSON parse ediliyor...")
             response_data = json.loads(response.content.decode('utf-8'))
+            
             if not response_data.get('choices') or not response_data['choices'][0].get('message') or not response_data['choices'][0]['message'].get('content'):
                  print(f"[{time.strftime('%H:%M:%S')}] HATA: Yanıt beklenen formatta değil. Yanıt: {response_data}")
                  return "Üzgünüm, yanıt formatı geçersiz."
             
             raw_reply_from_api = response_data['choices'][0]['message']['content']
+            print(f"[{time.strftime('%H:%M:%S')}] 🎉 AI yanıtı başarıyla alındı! (Uzunluk: {len(raw_reply_from_api)} karakter)")
+            
             filtered_reply_chars = self.filter_non_bmp_chars(raw_reply_from_api)
             summary_for_context = self.create_response_summary(filtered_reply_chars)
             self.context_manager_instance.add_my_response(filtered_reply_chars, summary_for_context)
@@ -221,11 +246,17 @@ class RedditChatBot:
             return filtered_reply_chars
 
         except requests.exceptions.Timeout:
-            return f"Üzgünüm, AI yanıtı zaman aşımına uğradı ({self.chat_relay_timeout}s)."
-        except requests.exceptions.ConnectionError:
-            return "Üzgünüm, Chat Relay sunucusuna bağlanılamadı."
+            print(f"[{time.strftime('%H:%M:%S')}] ⏰ TIMEOUT: Chat Relay {short_timeout} saniyede yanıt vermedi!")
+            return f"Üzgünüm, AI yanıtı zaman aşımına uğradı ({short_timeout}s). Chat Relay yavaş yanıt veriyor."
+        except requests.exceptions.ConnectionError as e:
+            print(f"[{time.strftime('%H:%M:%S')}] 🔌 BAĞLANTI HATASI: {e}")
+            return "Üzgünüm, Chat Relay sunucusuna bağlanılamadı. Sunucu çalışıyor mu?"
+        except json.JSONDecodeError as e:
+            print(f"[{time.strftime('%H:%M:%S')}] 📄 JSON PARSE HATASI: {e}")
+            print(f"[{time.strftime('%H:%M:%S')}] Yanıt metni: {response.text[:200]}...")
+            return "Üzgünüm, Chat Relay'den gelen yanıt parse edilemedi."
         except Exception as e:
-            print(f"[{time.strftime('%H:%M:%S')}] AI yanıt oluşturma hatası: {e}")
+            print(f"[{time.strftime('%H:%M:%S')}] ❌ GENEL HATA: {e}")
             print(traceback.format_exc())
             return "Üzgünüm, yanıt oluştururken beklenmedik bir sorun oluştu."
 
@@ -266,7 +297,7 @@ class RedditChatBot:
                 else:
                     consecutive_dom_failures = 0  # DOM sağlıklıysa counter'ı sıfırla
                 
-                # Yeni ve güçlü mesaj alma fonksiyonumuzu kullanıyoruz.
+                # --- Stabil, tekli mesaj işleme döngüsü ('old' versiyonundan ilhamla) ---
                 current_message_content, current_username, current_msg_id, current_msg_timestamp = self.message_manager.get_last_message_with_user()
 
                 if not current_msg_id: 
@@ -277,52 +308,43 @@ class RedditChatBot:
                 is_new_message = current_msg_id not in self.message_manager.processed_event_ids
 
                 if is_new_message:
-                    # Botun kendi mesajını görmezden gel
-                    if current_username.lower() == self.bot_username.lower():
+                    # Botun kendi mesajını ve diğer olası bot adlarını görmezden gel
+                    is_bot_message = (current_username.lower() == self.bot_username.lower() or 
+                                      current_username.lower().startswith('FelsefeGPT'))
+                    
+                    if is_bot_message:
                         self.message_manager.processed_event_ids.add(current_msg_id)
                         continue
 
                     print(f"[{time.strftime('%H:%M:%S')}] YENİ MESAJ - {current_username}: {current_message_content[:70]}...")
 
-                    # Arşive ve bağlama ekle
-                    if current_username != "BilinmeyenKullanici":
-                        self.user_archive_manager.log_message(current_username, current_message_content, current_msg_timestamp)
-
-                    # handle_message_for_context şimdi daha önemli, çünkü /ai komutlarını ayıklıyor
+                    # handle_message_for_context şimdi /ai komutlarını ayıklıyor
                     ai_prompt_for_model = self.message_manager.handle_message_for_context(
                         current_message_content, current_username, current_msg_id, 
-                        current_msg_timestamp, self.initial_scan_complete_time, False
+                        current_msg_timestamp, self.initial_scan_complete_time, 
+                        is_already_marked_processed_in_loop=False # Artık döngü içinde işaretlenmediği için False
                     )
 
                     # Eğer bir /ai komutu varsa ve yanıtlanması gerekiyorsa
                     if ai_prompt_for_model:
+                        print(f"[{time.strftime('%H:%M:%S')}] 🤖 AI yanıtı oluşturuluyor...")
                         ai_response_full = self.generate_ai_response(ai_prompt_for_model)
                         if ai_response_full and ai_response_full.strip():
-                            # Paragraflara ayırıp gönderme mantığı aynı kaldı
-                            paragraphs = [p.strip() for p in ai_response_full.split('\n') if p.strip()]
-                            if not paragraphs:
-                                paragraphs = [ai_response_full.strip()]
-
-                            print(f"[{time.strftime('%H:%M:%S')}] Yanıt {len(paragraphs)} parçaya bölündü.")
-                            for i, paragraph_raw in enumerate(paragraphs):
-                                paragraph_to_send = self.shorten_reply(paragraph_raw, max_words=MAX_RESPONSE_WORDS)
-                                if not paragraph_to_send: continue
-                                
-                                # Göndermeden önce son bir DOM kontrolü
-                                if not self.dom_manager.is_dom_healthy():
-                                    print(f"[{time.strftime('%H:%M:%S')}] Mesaj gönderimi iptal edildi, DOM sağlıksız.")
-                                    break
-                                
-                                if self.message_manager.send_message(paragraph_to_send):
-                                    print(f"[{time.strftime('%H:%M:%S')}] YANIT PARÇASI ({i+1}/{len(paragraphs)}) GÖNDERİLDİ...")
+                            final_response = self.shorten_reply(ai_response_full, max_words=MAX_RESPONSE_WORDS)
+                            if self.dom_manager.is_dom_healthy():
+                                print(f"[{time.strftime('%H:%M:%S')}] 📤 AI yanıtı gönderiliyor... (Uzunluk: {len(final_response)} karakter)")
+                                if self.message_manager.send_message(final_response):
+                                    print(f"[{time.strftime('%H:%M:%S')}] ✅ AI YANITI BAŞARIYLA GÖNDERİLDİ!")
                                 else:
-                                    print(f"[{time.strftime('%H:%M:%S')}] YANIT PARÇASI GÖNDERİLEMEDİ! Döngüye devam ediliyor.")
-                                    break 
-                                
-                                if i < len(paragraphs) - 1:
-                                    time.sleep(self.MESSAGE_SEND_DELAY)
-                    
-                    # Bu mesajın işlendiğini işaretle
+                                    print(f"[{time.strftime('%H:%M:%S')}] ❌ AI YANITI GÖNDERİLEMEDİ!")
+                            else:
+                                print(f"[{time.strftime('%H:%M:%S')}] Mesaj gönderimi iptal edildi, DOM sağlıksız.")
+                        else:
+                            print(f"[{time.strftime('%H:%M:%S')}] ❌ AI yanıtı boş veya hatalı!")
+                            if self.message_manager.send_message("Üzgünüm, şu anda yanıt veremiyorum. Lütfen tekrar deneyin."):
+                                print(f"[{time.strftime('%H:%M:%S')}] ⚠️ Hata mesajı gönderildi.")
+
+                    # Bu mesajın işlendiğini en sonda işaretle
                     self.message_manager.processed_event_ids.add(current_msg_id)
                 
                 time.sleep(MAIN_LOOP_SLEEP)
@@ -344,9 +366,6 @@ class RedditChatBot:
 
     def cleanup(self):
         try:
-            if self.user_archive_manager: 
-                print(f"[{time.strftime('%H:%M:%S')}] Kapanış: Arşiv kaydediliyor...")
-                self.user_archive_manager.force_save()
             if self.driver: 
                 print(f"[{time.strftime('%H:%M:%S')}] Kapanış: Chrome driver kapatılıyor...")
                 self.driver.quit()

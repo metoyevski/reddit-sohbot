@@ -7,12 +7,12 @@ CHAT_LINK = "https://chat.reddit.com/room/!6o33yjMRTLajji5deGy62g%3Areddit.com" 
 # Bu ayarlar, bot.py'nin yerel chat-relay sunucusuna bağlanmasını sağlar.
 CHAT_RELAY_BASE_URL = "http://localhost:3003/v1/chat/completions"
 # AI Studio ile çalışmak için 'gemini-pro' kullanıyoruz. ChatGPT için 'chatgpt' kullanabilirsiniz.
-CHAT_RELAY_MODEL_ID = "chatgpt"
+CHAT_RELAY_MODEL_ID = "gemini-pro"
 # Sunucudan yanıt beklerken zaman aşımı süresi (saniye cinsinden).
-CHAT_RELAY_TIMEOUT_SECONDS = 180
+CHAT_RELAY_TIMEOUT_SECONDS = 60
 
 # --- Diğer Bot Ayarları ---
-BOT_OWN_USERNAME = "arkadasimoIamazsin"  # BOTUNUZUN REDDIT KULLANICI ADINI GİRİN (Büyük/küçük harf önemli olabilir)
+BOT_OWN_USERNAME = "FelsefeGPT"  # BOTUNUZUN REDDIT KULLANICI ADINI GİRİN (Büyük/küçük harf önemli olabilir)
 
 CONTEXT_WINDOW_SIZE = 400  # 420 * 1.5 = 630
 CONTEXT_PROMPT_USER_MESSAGES = 66  # 60 * 1.5 = 90
