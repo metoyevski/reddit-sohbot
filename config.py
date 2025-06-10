@@ -35,6 +35,9 @@ INITIAL_SCAN_INTERVAL = 1.5
 MAIN_LOOP_SLEEP = 0.2  # 0.5'ten 0.2'ye düşürüldü - daha responsive real-time
 PERIODIC_DOM_CHECK_INTERVAL_LOOPS = 120
 
+# Grace Period - Bot başladıktan sonra bu süre boyunca eski mesajlara yanıt vermez
+BOT_GRACE_PERIOD_SECONDS = 20  # 20 saniye boyunca sadece dinle, yanıt verme
+
 # === ESKİ AYARLAR (Artık Aktif Kullanılmıyor) ===
 # Shadow root bulma denemeleri artık message_manager'ın esnek yapısı içinde ele alınıyor.
 # SHADOW_ROOT_MAX_ATTEMPTS = 12

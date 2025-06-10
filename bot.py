@@ -18,7 +18,8 @@ from config import (
     CHAT_LINK, BOT_OWN_USERNAME, MAX_RESPONSE_WORDS,
     CONTEXT_WINDOW_SIZE,
     INITIAL_MESSAGES_TO_READ, LOGIN_WAIT_TIME, PAGE_LOAD_TIMEOUT,
-    MAIN_LOOP_SLEEP, PERIODIC_DOM_CHECK_INTERVAL_LOOPS
+    MAIN_LOOP_SLEEP, PERIODIC_DOM_CHECK_INTERVAL_LOOPS,
+    BOT_GRACE_PERIOD_SECONDS
 )
 from context_manager import ContextManager
 from dom_manager import ChatDOMManager
@@ -38,6 +39,11 @@ class RedditChatBot:
         self.context_manager_instance = ContextManager(max_size=CONTEXT_WINDOW_SIZE)
         self.initial_scan_complete_time = None
         self.MESSAGE_SEND_DELAY = 2.5 # Hafifçe ayarlandı
+        
+        # Grace Period - Bot başladıktan sonra eski mesajlara yanıt vermemek için
+        self.grace_period_start_time = None
+        self.grace_period_active = True
+        
         self.DAN_SYSTEM_PROMPT = f"""Eleştirel ve sorgulayıcı bir yapay zekâ asistanısın. Bu bağlamda, sana /ai ile yazılan promptları alacaksın ve u/username (mesela u/birbenimiunuttalar) diyerek kim yazdıysa onun sorusuna düzgünce, felsefî temellendirilmiş yanıt vereceksin. Yanıtlarında her daim bir taraf tutacaksın ve hangi taraf daha rasyonelse, felsefÎ bir biçimde gerekçelendirerek onun neden haklı olduğunu söyleyeceksin. Asla tarafsız olmayacaksın:"""
 
     def initialize(self):
@@ -184,7 +190,8 @@ class RedditChatBot:
         self.initial_scan_complete_time = datetime.now()
         print(f"[{time.strftime('%H:%M:%S')}] ✅ Başlangıç taraması tamamlandı!")
         print(f"[{time.strftime('%H:%M:%S')}] 📊 İstatistik: {total_processed} mesaj işlendi, {ai_commands_found} adet /ai komutu bulundu (yanıtlanmadı)")
-        print(f"[{time.strftime('%H:%M:%S')}] 🚀 Bot artık yeni /ai komutlarına yanıt vermeye hazır!")
+        print(f"[{time.strftime('%H:%M:%S')}] 🕐 Grace Period: {BOT_GRACE_PERIOD_SECONDS} saniye boyunca eski mesajlara yanıt verilmeyecek")
+        print(f"[{time.strftime('%H:%M:%S')}] 🚀 Bot hazır! Grace period bittikten sonra yeni /ai komutlarına yanıt verecek.")
 
     # Bu yardımcı fonksiyonlar değişmedi
     def filter_non_bmp_chars(self, text):
@@ -265,6 +272,10 @@ class RedditChatBot:
         print(f"[{time.strftime('%H:%M:%S')}] Mesajlar arası bekleme: {self.MESSAGE_SEND_DELAY} saniye.")
         print("="*50 + "\n")
 
+        # Grace period'u başlat
+        self.grace_period_start_time = datetime.now()
+        print(f"[{time.strftime('%H:%M:%S')}] 🕐 Grace Period başladı: {BOT_GRACE_PERIOD_SECONDS} saniye boyunca eski mesajlara yanıt verilmeyecek.")
+
         self.populate_initial_context()
         
         consecutive_dom_failures = 0
@@ -272,6 +283,13 @@ class RedditChatBot:
         
         while True:
             try:
+                # Grace period kontrolü
+                if self.grace_period_active and self.grace_period_start_time:
+                    elapsed_time = (datetime.now() - self.grace_period_start_time).total_seconds()
+                    if elapsed_time >= BOT_GRACE_PERIOD_SECONDS:
+                        self.grace_period_active = False
+                        print(f"[{time.strftime('%H:%M:%S')}] ✅ Grace Period bitti! Artık yeni /ai komutlarına yanıt verilecek.")
+                
                 # DOM sağlığı artık sadece mesaj gönderme yeteneğini kontrol ediyor.
                 if not self.dom_manager.is_dom_healthy():
                     consecutive_dom_failures += 1
@@ -326,22 +344,26 @@ class RedditChatBot:
 
                     # Eğer bir /ai komutu varsa ve yanıtlanması gerekiyorsa
                     if ai_prompt_for_model:
-                        print(f"[{time.strftime('%H:%M:%S')}] 🤖 AI yanıtı oluşturuluyor...")
-                        ai_response_full = self.generate_ai_response(ai_prompt_for_model)
-                        if ai_response_full and ai_response_full.strip():
-                            final_response = self.shorten_reply(ai_response_full, max_words=MAX_RESPONSE_WORDS)
-                            if self.dom_manager.is_dom_healthy():
-                                print(f"[{time.strftime('%H:%M:%S')}] 📤 AI yanıtı gönderiliyor... (Uzunluk: {len(final_response)} karakter)")
-                                if self.message_manager.send_message(final_response):
-                                    print(f"[{time.strftime('%H:%M:%S')}] ✅ AI YANITI BAŞARIYLA GÖNDERİLDİ!")
-                                else:
-                                    print(f"[{time.strftime('%H:%M:%S')}] ❌ AI YANITI GÖNDERİLEMEDİ!")
-                            else:
-                                print(f"[{time.strftime('%H:%M:%S')}] Mesaj gönderimi iptal edildi, DOM sağlıksız.")
+                        # Grace period kontrolü - Grace period aktifse yanıt verme
+                        if self.grace_period_active:
+                            print(f"[{time.strftime('%H:%M:%S')}] 🕐 Grace Period aktif - /ai komutuna yanıt verilmiyor (mesaj bağlama eklendi)")
                         else:
-                            print(f"[{time.strftime('%H:%M:%S')}] ❌ AI yanıtı boş veya hatalı!")
-                            if self.message_manager.send_message("Üzgünüm, şu anda yanıt veremiyorum. Lütfen tekrar deneyin."):
-                                print(f"[{time.strftime('%H:%M:%S')}] ⚠️ Hata mesajı gönderildi.")
+                            print(f"[{time.strftime('%H:%M:%S')}] 🤖 AI yanıtı oluşturuluyor...")
+                            ai_response_full = self.generate_ai_response(ai_prompt_for_model)
+                            if ai_response_full and ai_response_full.strip():
+                                final_response = self.shorten_reply(ai_response_full, max_words=MAX_RESPONSE_WORDS)
+                                if self.dom_manager.is_dom_healthy():
+                                    print(f"[{time.strftime('%H:%M:%S')}] 📤 AI yanıtı gönderiliyor... (Uzunluk: {len(final_response)} karakter)")
+                                    if self.message_manager.send_message(final_response):
+                                        print(f"[{time.strftime('%H:%M:%S')}] ✅ AI YANITI BAŞARIYLA GÖNDERİLDİ!")
+                                    else:
+                                        print(f"[{time.strftime('%H:%M:%S')}] ❌ AI YANITI GÖNDERİLEMEDİ!")
+                                else:
+                                    print(f"[{time.strftime('%H:%M:%S')}] Mesaj gönderimi iptal edildi, DOM sağlıksız.")
+                            else:
+                                print(f"[{time.strftime('%H:%M:%S')}] ❌ AI yanıtı boş veya hatalı!")
+                                if self.message_manager.send_message("Üzgünüm, şu anda yanıt veremiyorum. Lütfen tekrar deneyin."):
+                                    print(f"[{time.strftime('%H:%M:%S')}] ⚠️ Hata mesajı gönderildi.")
 
                     # Bu mesajın işlendiğini en sonda işaretle
                     self.message_manager.processed_event_ids.add(current_msg_id)

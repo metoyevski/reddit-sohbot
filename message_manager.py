@@ -119,21 +119,22 @@ return (function(processedIdsArray) {
                 }
             } catch (e) {}
 
-            // ID oluştur (COPY 2'DEN UYARLANDI)
+            // ID oluştur - SADECE MESAJ İÇERİĞİNE DAYALI (author bağımsız - sonsuz döngü önlenir)
             const contentHash = cyrb53(messageText);
-            const trulyStableId = `${author}_${contentHash}`;
+            const messageBasedId = `msg_${contentHash}_${messageText.substring(0, 10)}`;
             
             // ID'nin daha önce işlenip işlenmediğini kontrol et
-            if (processedIds.has(trulyStableId)) {
+            if (processedIds.has(messageBasedId)) {
                 return null; // Zaten işlenmişse atla
             }
 
             const isOwn = (shadowRoot.querySelector('.flex-row-reverse') !== null);
 
             return {
-                id: trulyStableId,
+                id: messageBasedId,
                 text: messageText,
-                author: author,
+                user: author, // Python'da 'user' field'ini arayacak
+                author: author, // Backward compatibility için
                 authorFound: authorFound, // Bu bilgiyi döngüye geri döndür
                 timestamp: timestamp,
                 isOwn: isOwn
@@ -151,18 +152,23 @@ return (function(processedIdsArray) {
 
     const processedMessages = [];
     let lastValidAuthor = null; // Son "gerçek" yazarı takip et
+    console.log(`[JS] Processing ${allMessageElements.length} message elements...`);
+    
     for (let i = 0; i < allMessageElements.length; i++) {
         const msgData = getMessageData(allMessageElements[i], i, lastValidAuthor);
         if (msgData) {
+            console.log(`[JS] Message ${i}: "${msgData.text.substring(0, 30)}..." -> User: ${msgData.user} (Found: ${msgData.authorFound}, LastValid: ${lastValidAuthor})`);
             processedMessages.push(msgData);
             // Eğer bu mesajda yeni bir yazar etiketi bulunduysa, bir sonraki isimsiz
             // mesajlar için onu "son geçerli yazar" olarak ayarla.
             if (msgData.authorFound) {
                 lastValidAuthor = msgData.author;
+                console.log(`[JS] Updated lastValidAuthor to: ${lastValidAuthor}`);
             }
         }
     }
     
+    console.log(`[JS] Returning ${processedMessages.length} processed messages`);
     return processedMessages;
 })(arguments[0] || []);
 """
