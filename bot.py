@@ -139,11 +139,10 @@ class RedditChatBot:
     def populate_initial_context(self):
         print(f"[{time.strftime('%H:%M:%S')}] Başlangıç bağlamı toplanıyor (yeni akıllı yöntemle)...")
         
-        # Başlangıçta TÜM mesajları al (filtreleme olmadan)
+        # Başlangıçta TÜM mesajları al (filtreleme JavaScript tarafında yapılıyor)
         initial_messages = self.message_manager.get_last_n_messages(
             n=INITIAL_MESSAGES_TO_READ, 
-            initial_scan=True, 
-            filter_processed=False # << ÖNEMLİ: Filtreleme kapalı
+            initial_scan=True
         )
         
         if not initial_messages:
